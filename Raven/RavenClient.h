@@ -10,6 +10,26 @@
 
 #define RavenCaptureMessage( s, ... ) [[RavenClient sharedClient] captureMessage:[NSString stringWithFormat:(s), ##__VA_ARGS__] level:kRavenLogLevelDebugInfo method:__FUNCTION__ file:__FILE__ line:__LINE__]
 
+#define RavenCaptureError(error) [[RavenClient sharedClient] captureMessage:[NSString stringWithFormat:@"%@", error] \
+                                                                      level:kRavenLogLevelDebugError \
+                                                            additionalExtra:nil \
+                                                             additionalTags:nil \
+                                                                     method:__FUNCTION__ \
+                                                                       file:__FILE__ \
+                                                                       line:__LINE__];
+
+#define RavenCaptureNetworkError(error) [[RavenClient sharedClient] captureMessage:[NSString stringWithFormat:@"%@", error] \
+                                                                             level:kRavenLogLevelDebugError \
+                                                                   additionalExtra:nil \
+                                                                    additionalTags:nil \
+                                                                            method:__FUNCTION__ \
+                                                                              file:__FILE__ \
+                                                                              line:__LINE__ \
+                                                                           sendNow:NO];
+
+#define RavenCaptureException(exception) [[RavenClient sharedClient] captureException:exception method:__FUNCTION__ file:__FILE__ line:__LINE__ sendNow:YES];
+
+
 typedef enum {
     kRavenLogLevelDebug,
     kRavenLogLevelDebugInfo,
@@ -23,6 +43,8 @@ typedef enum {
 
 @property (strong, nonatomic) NSDictionary *extra;
 @property (strong, nonatomic) NSDictionary *tags;
+@property (strong, nonatomic) NSString *logger;
+@property (strong, nonatomic) NSDictionary *user;
 
 /**
  * By setting tags with setTags: selector it will also set default settings:
@@ -38,11 +60,13 @@ typedef enum {
 + (RavenClient *)clientWithDSN:(NSString *)DSN;
 + (RavenClient *)clientWithDSN:(NSString *)DSN extra:(NSDictionary *)extra;
 + (RavenClient *)clientWithDSN:(NSString *)DSN extra:(NSDictionary *)extra tags:(NSDictionary *)tags;
++ (RavenClient *)clientWithDSN:(NSString *)DSN extra:(NSDictionary *)extra tags:(NSDictionary *)tags logger:(NSString *)logger;
 + (RavenClient *)sharedClient;
 
 - (id)initWithDSN:(NSString *)DSN;
 - (id)initWithDSN:(NSString *)DSN extra:(NSDictionary *)extra;
 - (id)initWithDSN:(NSString *)DSN extra:(NSDictionary *)extra tags:(NSDictionary *)tags;
+- (id)initWithDSN:(NSString *)DSN extra:(NSDictionary *)extra tags:(NSDictionary *)tags logger:(NSString *)logger;
 
 /**
  * Messages
@@ -65,6 +89,15 @@ typedef enum {
                   file:(const char *)file
                   line:(NSInteger)line;
 
+- (void)captureMessage:(NSString *)message
+                 level:(RavenLogLevel)level
+       additionalExtra:(NSDictionary *)additionalExtra
+        additionalTags:(NSDictionary *)additionalTags
+                method:(const char *)method
+                  file:(const char *)file
+                  line:(NSInteger)line
+               sendNow:(BOOL)sendNow;
+
 /**
  * Exceptions
  *
@@ -76,6 +109,7 @@ typedef enum {
 - (void)captureException:(NSException *)exception;
 - (void)captureException:(NSException *)exception sendNow:(BOOL)sendNow;
 - (void)captureException:(NSException *)exception additionalExtra:(NSDictionary *)additionalExtra additionalTags:(NSDictionary *)additionalTags sendNow:(BOOL)sendNow;
+- (void)captureException:(NSException*)exception method:(const char*)method file:(const char*)file line:(NSInteger)line sendNow:(BOOL)sendNow;
 - (void)setupExceptionHandler;
 
 @end

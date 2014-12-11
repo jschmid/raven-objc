@@ -21,7 +21,7 @@ NSString *const kRavenLogLevelArray[] = {
 
 NSString *const userDefaultsKey = @"nl.mixedCase.RavenClient.Exceptions";
 NSString *const sentryProtocol = @"4";
-NSString *const sentryClient = @"raven-objc/0.1.0";
+NSString *const sentryClient = @"raven-objc/0.5.0";
 
 static RavenClient *sharedClient = nil;
 
@@ -90,6 +90,10 @@ void exceptionHandler(NSException *exception) {
     return [[self alloc] initWithDSN:DSN extra:extra tags:tags];
 }
 
++ (RavenClient *)clientWithDSN:(NSString *)DSN extra:(NSDictionary *)extra tags:(NSDictionary *)tags logger:(NSString *)logger {
+    return [[self alloc] initWithDSN:DSN extra:extra tags:tags logger:logger];
+}
+
 + (RavenClient *)sharedClient {
     return sharedClient;
 }
@@ -103,14 +107,19 @@ void exceptionHandler(NSException *exception) {
 }
 
 - (id)initWithDSN:(NSString *)DSN extra:(NSDictionary *)extra tags:(NSDictionary *)tags {
+    return [self initWithDSN:DSN extra:extra tags:tags logger:nil];
+}
+
+- (id)initWithDSN:(NSString *)DSN extra:(NSDictionary *)extra tags:(NSDictionary *)tags logger:(NSString *)logger {
     self = [super init];
     if (self) {
-        self.config = [[RavenConfig alloc] init];
-        self.extra = extra;
+		_config = [[RavenConfig alloc] init];
+        _extra = extra;
+        _logger = logger;
         self.tags = tags;
 
         // Parse DSN
-        if (![self.config setDSN:DSN]) {
+        if (![_config setDSN:DSN]) {
             NSLog(@"Invalid DSN %@!", DSN);
             return nil;
         }
@@ -150,6 +159,19 @@ void exceptionHandler(NSException *exception) {
                 method:(const char *)method
                   file:(const char *)file
                   line:(NSInteger)line {
+    
+    [self captureMessage:message level:level additionalExtra:additionalExtra additionalTags:additionalTags method:method file:file line:line sendNow:YES];
+}
+
+- (void)captureMessage:(NSString *)message
+                 level:(RavenLogLevel)level
+       additionalExtra:(NSDictionary *)additionalExtra
+        additionalTags:(NSDictionary *)additionalTags
+                method:(const char *)method
+                  file:(const char *)file
+                  line:(NSInteger)line
+               sendNow:(BOOL)sendNow {
+    
     NSArray *stacktrace;
     NSString *culprit;
     if (method && file && line) {
@@ -158,7 +180,7 @@ void exceptionHandler(NSException *exception) {
         NSDictionary *frame = [NSDictionary dictionaryWithObjectsAndKeys:
                                filename, @"filename",
                                methodString, @"function",
-                               [NSNumber numberWithInt:line], @"lineno",
+                               [NSNumber numberWithInteger:line], @"lineno",
                                nil];
 
         stacktrace = [NSArray arrayWithObject:frame];
@@ -173,8 +195,22 @@ void exceptionHandler(NSException *exception) {
                                                    culprit:culprit
                                                 stacktrace:stacktrace
                                                  exception:nil];
-
-    [self sendDictionary:data];
+    
+    if (!sendNow) {
+        // We can't send this message to Sentry now, e.g. because the error was network related and the user may not have a data connection So, save it into NSUserDefaults.
+        NSArray *reports = [[NSUserDefaults standardUserDefaults] objectForKey:userDefaultsKey];
+        if (reports != nil) {
+            NSMutableArray *reportsCopy = [reports mutableCopy];
+            [reportsCopy addObject:data];
+            [[NSUserDefaults standardUserDefaults] setObject:reportsCopy forKey:userDefaultsKey];
+        } else {
+            reports = [NSArray arrayWithObject:data];
+            [[NSUserDefaults standardUserDefaults] setObject:reports forKey:userDefaultsKey];
+        }
+        [[NSUserDefaults standardUserDefaults] synchronize];
+    } else {
+        [self sendDictionary:data];
+    }
 }
 
 #pragma mark - Exceptions
@@ -205,6 +241,55 @@ void exceptionHandler(NSException *exception) {
                                                      level:kRavenLogLevelDebugFatal
                                            additionalExtra:additionalExtra
                                             additionalTags:additionalTags
+                                                   culprit:nil
+                                                stacktrace:stacktrace
+                                                 exception:exceptionDict];
+
+    if (!sendNow) {
+        // We can't send this exception to Sentry now, e.g. because the app is killed before the
+        // connection can be made. So, save it into NSUserDefaults.
+        NSArray *reports = [[NSUserDefaults standardUserDefaults] objectForKey:userDefaultsKey];
+        if (reports != nil) {
+            NSMutableArray *reportsCopy = [reports mutableCopy];
+            [reportsCopy addObject:data];
+            [[NSUserDefaults standardUserDefaults] setObject:reportsCopy forKey:userDefaultsKey];
+        } else {
+            reports = [NSArray arrayWithObject:data];
+            [[NSUserDefaults standardUserDefaults] setObject:reports forKey:userDefaultsKey];
+        }
+        [[NSUserDefaults standardUserDefaults] synchronize];
+    } else {
+        [self sendDictionary:data];
+    }
+}
+
+- (void)captureException:(NSException *)exception method:(const char *)method file:(const char *)file line:(NSInteger)line sendNow:(BOOL)sendNow {
+    NSString *message = [NSString stringWithFormat:@"%@: %@", exception.name, exception.reason];
+
+    NSDictionary *exceptionDict = [NSDictionary dictionaryWithObjectsAndKeys:
+            exception.name, @"type",
+            exception.reason, @"value",
+                    nil];
+
+    NSArray *callStack = [exception callStackSymbols];
+    NSMutableArray *stacktrace;
+    if (method && file && line) {
+        NSDictionary *frame = [NSDictionary dictionaryWithObjectsAndKeys:
+                [[NSString stringWithUTF8String:file] lastPathComponent], @"filename",
+                [NSString stringWithUTF8String:method], @"function",
+                [NSNumber numberWithInteger:line], @"lineno",
+                        nil];
+
+        stacktrace = [NSMutableArray arrayWithObject:frame];
+    }
+    for (NSString *call in callStack) {
+        [stacktrace addObject:[NSDictionary dictionaryWithObjectsAndKeys:call, @"function", nil]];
+    }
+
+    NSDictionary *data = [self prepareDictionaryForMessage:message
+                                                     level:kRavenLogLevelDebugFatal
+                                           additionalExtra:nil
+                                            additionalTags:nil
                                                    culprit:nil
                                                 stacktrace:stacktrace
                                                  exception:exceptionDict];
@@ -277,10 +362,12 @@ void exceptionHandler(NSException *exception) {
             [self.dateFormatter stringFromDate:[NSDate date]], @"timestamp",
             kRavenLogLevelArray[level], @"level",
             @"objc", @"platform",
+            self.user ?: @"", @"user",
 
             extra, @"extra",
             tags, @"tags",
-
+            self.logger ?: @"", @"logger",
+            
             message, @"message",
             culprit ?: @"", @"culprit",
             stacktraceDict, @"stacktrace",
@@ -294,10 +381,10 @@ void exceptionHandler(NSException *exception) {
 }
 
 - (void)sendJSON:(NSData *)JSON {
-    NSString *header = [NSString stringWithFormat:@"Sentry sentry_version=%@, sentry_client=%@, sentry_timestamp=%d, sentry_key=%@, sentry_secret=%@",
+    NSString *header = [NSString stringWithFormat:@"Sentry sentry_version=%@, sentry_client=%@, sentry_timestamp=%ld, sentry_key=%@, sentry_secret=%@",
                         sentryProtocol,
                         sentryClient,
-                        (NSInteger)[NSDate timeIntervalSinceReferenceDate],
+                        (long)[NSDate timeIntervalSinceReferenceDate],
                         self.config.publicKey,
                         self.config.secretKey];
 
@@ -305,11 +392,17 @@ void exceptionHandler(NSException *exception) {
     [request setHTTPMethod:@"POST"];
     [request setValue:@"application/json" forHTTPHeaderField:@"Accept"];
     [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
-    [request setValue:[NSString stringWithFormat:@"%d", [JSON length]] forHTTPHeaderField:@"Content-Length"];
+    [request setValue:[NSString stringWithFormat:@"%lu", (unsigned long)[JSON length]] forHTTPHeaderField:@"Content-Length"];
     [request setHTTPBody:JSON];
     [request setValue:header forHTTPHeaderField:@"X-Sentry-Auth"];
 
-    [NSURLConnection sendAsynchronousRequest:request queue:[NSOperationQueue currentQueue] completionHandler:nil];
+    [NSURLConnection sendAsynchronousRequest:request queue:[NSOperationQueue currentQueue] completionHandler:^(NSURLResponse *response, NSData *data, NSError *connectionError) {
+        if (data) {
+        	NSLog(@"JSON sent to Sentry");
+        } else {
+             NSLog(@"Connection failed! Error - %@ %@", [connectionError localizedDescription], [[connectionError userInfo] objectForKey:NSURLErrorFailingURLStringErrorKey]);
+        }
+    }];
 }
 
 #pragma mark - JSON helpers
